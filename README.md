@@ -1,0 +1,1 @@
+INeedHelp is a Game Boy, Game Boy Advance, and Nintendo DS emulator written entirely in JavaScript and TypeScript.
