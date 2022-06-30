@@ -1,3 +1,9 @@
+function popCount(n: number) {
+    n = n - ((n >> 1) & 0x55555555);
+    n = (n & 0x33333333) + ((n >> 2) & 0x33333333);
+    return ((n + (n >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+}
+
 function bit(bit: number) {
     return 1 << bit;
 }
@@ -37,11 +43,11 @@ function binN(i: any, digits: number) {
 function pad(n: string, width: number, z: string) {
     z = z || '0';
     n = n + '';
-    return n.length >= width ? n : z.repeat(width - n.length + 1) + n;
+    return n.length >= width ? n : z.repeat(width - n.length) + n;
 }
 
 function r_pad(n: string, width: number, z: string) {
     z = z || '0';
     n = n + '';
-    return n.length >= width ? n : n + z.repeat(width - n.length + 1);
+    return n.length >= width ? n : n + z.repeat(width - n.length);
 }

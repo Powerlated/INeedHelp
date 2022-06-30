@@ -1,20 +1,33 @@
 <!DOCTYPE html>
 <html>
-    <head>
-        <title>INeedHelp</title>
 
-        <script src="core/Util.js"></script>
-        <script src="core/ArmCpu.js"></script>
-        <script src="core/Gba.js"></script>
-        <script src="core/Memory.js"></script>
-    </head>
-    <body>
+<head>
+    <title>INeedHelp</title>
+
+    <script src="core/Util.js"></script>
+    <script src="core/ArmCpu.js"></script>
+    <script src="core/Gba.js"></script>
+    <script src="core/Memory.js"></script>
+</head>
+
+<body>
+    <div>
         <label for="name">Default ROM to load from server</label>
-        <input type="text" id="default-rom-input"> 
-
+        <input type="text" id="default-rom-input">
         <button type="button" id="load-default-rom-button">Load</button>
+    </div>
+    <div>
+        <label for="name">Snag Point (start printing debug info 100 instrs before, -1 to disable)</label>
+        <input type="number" id="snag-point-input" value="-1">
+    </div>
+    <div>
+        <label for="name">Instructions to run and log</label>
+        <input type="number" id="run-instrs">
+        <button type="button" id="run-and-log-button">Run & Log</button>
+    </div>
 
-        <script src="index.js"></script>
+    <script src="index.js"></script>
 
-    </body>
+</body>
+
 </html>

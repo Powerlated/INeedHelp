@@ -8,11 +8,15 @@ class GbaMemory implements Memory {
     rom: DataView;
     ewram: DataView;
     iwram: DataView;
+    palettes: DataView;
+    vram: DataView;
 
     constructor(rom: Uint8Array) {
         this.rom = new DataView(rom.buffer);
         this.ewram = new DataView(new ArrayBuffer(262144));
         this.iwram = new DataView(new ArrayBuffer(32768));
+        this.palettes = new DataView(new ArrayBuffer(1024));
+        this.vram = new DataView(new ArrayBuffer(98304));
     }
 
     readIo8(addr: number): number {
@@ -38,6 +42,10 @@ class GbaMemory implements Memory {
     }
     read16(addr: number): number {
         switch ((addr >> 24) & 0xF) {
+            case 0x4:
+                return this.readIo8(addr + 0) |
+                    (this.readIo8(addr + 1) << 8);
+
             case 0x8:
             case 0x9:
             case 0xA:
@@ -47,13 +55,24 @@ class GbaMemory implements Memory {
                 return this.rom.getUint16(addr & 0x1FFFFFF, true);
         }
 
-        throw new Error("Not implemented");
+        throw new Error("Not implemented addr:" + hexN(addr, 8));
     }
     write16(addr: number, val: number) {
-        throw new Error("Method not implemented.");
+        switch ((addr >> 24) & 0xF) {
+            case 0x5:
+                this.palettes.setUint16(addr & 0x3FF, val);
+                break;
+
+            default:
+                throw new Error("Not implemented");
+        }
     }
     read32(addr: number): number {
         switch ((addr >> 24) & 0xF) {
+            case 0x2:
+                return this.ewram.getUint32(addr & 0x3FFFF);
+            case 0x3:
+                return this.iwram.getUint32(addr & 0x7FFF);
             case 0x4:
                 return this.readIo8(addr + 0) |
                     (this.readIo8(addr + 1) << 8) |
@@ -69,10 +88,16 @@ class GbaMemory implements Memory {
                 return this.rom.getUint32(addr & 0x1FFFFFF, true);
         }
 
-        throw new Error("Not implemented");
+        throw new Error("Not implemented: " + hexN(addr, 8));
     }
     write32(addr: number, val: number): void {
         switch ((addr >> 24) & 0xF) {
+            case 0x2:
+                this.ewram.setUint32(addr & 0x3FFFF, val);
+                break;
+            case 0x3:
+                this.iwram.setUint32(addr & 0x7FFF, val);
+                break;
             case 0x4:
                 this.writeIo8(addr + 0, (val >> 0) & 0xFF);
                 this.writeIo8(addr + 1, (val >> 8) & 0xFF);
@@ -92,13 +117,12 @@ class Gba {
 
     constructor(rom: Uint8Array) {
         this.memory = new GbaMemory(rom);
-        this.cpu = new ArmCpu(ArmCpuModel.ARM7, this.memory);
+        this.cpu = new ArmCpu(false, this.memory);
         this.cpu.r[15] = 0x08000000;
         this.cpu.flushPipelineInit();
     }
 
     run() {
-
         let cycles: number = this.cpu.execute();
     }
 }

@@ -1,4 +1,6 @@
 let gba = null;
+let log = "";
+let paused = true;
 
 /** @type {HTMLInputElement} */
 let defaultRomInput = document.getElementById('default-rom-input');
@@ -8,10 +10,30 @@ defaultRomInput.oninput = e => {
 };
 
 /** @type {HTMLInputElement} */
+let snagPointInput = document.getElementById('snag-point-input');
+snagPointInput.value = localStorage.getItem('snagPoint') ?? '';
+snagPointInput.oninput = e => {
+    localStorage.setItem('snagPoint', e.target.value);
+};
+
+/** @type {HTMLInputElement} */
 let loadDefaultRomButton = document.getElementById('load-default-rom-button');
 loadDefaultRomButton.onclick = () => {
     loadDefaultRom();
 };
+
+function downloadText(filename, text) {
+    var element = document.createElement('a');
+    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+    element.setAttribute('download', filename);
+
+    element.style.display = 'none';
+    document.body.appendChild(element);
+
+    element.click();
+
+    document.body.removeChild(element);
+}
 
 /**
  * @param {string} url  
@@ -42,11 +64,26 @@ if (defaultRomInput.value != '') {
     loadDefaultRom();
 }
 
+function getDebugString() {
+    let regs = "";
+    for (let i = 0; i < 15; i++) {
+        regs += `${hexN(gba.cpu.r[i], 8)} `;
+    }
+
+    if (gba.cpu.lastInsThumbState) {
+        return `${regs}${hexN(gba.cpu.lastInsAddr, 8)} cpsr: ${hexN(gba.cpu.getCpsr(), 8)} | `;
+    } else {
+        return `${regs}${hexN(gba.cpu.lastInsAddr, 8)} cpsr: ${hexN(gba.cpu.getCpsr(), 8)} | `;
+    }
+}
+
 window.onkeydown = e => {
     if (gba) {
         switch (e.key.toLowerCase()) {
             case "f7":
                 gba.run();
+                console.log(getDebugString());
+
                 break;
 
             case "0": console.log(`R0: ${hexN(gba.cpu.r[0], 8)}`); break;
@@ -66,6 +103,65 @@ window.onkeydown = e => {
             case "e": console.log(`R14: ${hexN(gba.cpu.r[14], 8)}`); break;
             case "f": console.log(`R15: ${hexN(gba.cpu.r[15], 8)}`); break;
 
+            case "p":
+                if (e.getModifierState("Control")) {
+                    e.preventDefault();
+                    paused = !paused;
+                }
+                break;
+
+            case "s":
+                console.log(getDebugString());
+                break;
         }
+    }
+};
+
+let loopInterval;
+loopInterval = setInterval(() => {
+    try {
+        if (!paused) {
+            for (let i = 0; i < 10000; i++) {
+                gba?.run();
+                if (snagPointInput.value != -1) {
+                    if (gba.cpu.executedNum >= snagPointInput.value - 100) {
+                        console.log(getDebugString());
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        clearInterval(loopInterval);
+        throw e;
+    }
+}, 100);
+
+document.querySelector('#run-and-log-button').onclick = () => {
+    let instrsToRun = document.querySelector('#run-instrs').value;
+    let total = 0;
+    let msgThreshold = 10000;
+    let msgCount = 0;
+
+    function preExecutionHook(ins) {
+        if (gba.cpu.cpsrThumbState) {
+            log += getDebugString() + `    ${hexN(ins, 4)}\n`;
+        } else {
+            log += getDebugString() + `${hexN(ins, 8)}\n`;
+        }
+    }
+
+    try {
+        gba.cpu.preExecutionHook = preExecutionHook;
+        for (let i = 0; i < instrsToRun; i++) {
+            total++;
+            if (++msgCount >= msgThreshold) {
+                console.log(total);
+                msgCount = 0;
+            }
+            gba?.run();
+        }
+    } finally {
+        gba.cpu.preExecutionHook = null;
+        downloadText('ineedhelp.log', log);
     }
 };
