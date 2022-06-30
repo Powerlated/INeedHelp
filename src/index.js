@@ -22,6 +22,10 @@ loadDefaultRomButton.onclick = () => {
     loadDefaultRom();
 };
 
+/** @type {HTMLCanvasElement} */
+let outputCanvas = document.querySelector('#output-canvas');
+let ctx2d = outputCanvas.getContext('2d');
+
 function downloadText(filename, text) {
     var element = document.createElement('a');
     element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
@@ -54,9 +58,13 @@ async function loadFileFromUrl(url) {
     });
 }
 
+function frameDoneCallback() {
+    ctx2d.putImageData(gba.ppu.screenBuffer, 0, 0);
+}
+
 async function loadDefaultRom() {
     let file = await loadFileFromUrl(defaultRomInput.value);
-    gba = new Gba(file);
+    gba = new Gba(file, frameDoneCallback);
     console.log(file);
 }
 
@@ -134,7 +142,7 @@ loopInterval = setInterval(() => {
         clearInterval(loopInterval);
         throw e;
     }
-}, 100);
+}, 10);
 
 document.querySelector('#run-and-log-button').onclick = () => {
     let instrsToRun = document.querySelector('#run-instrs').value;

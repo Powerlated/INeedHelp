@@ -24,6 +24,9 @@ const enum CpsrFlag {
     Thumb = 1 << 5,
 }
 
+type ReadFunction = (addr: number) => number;
+type WriteFunction = (addr: number, val: number) => void;
+
 function rotateRight32(val: number, bits: number): number {
     return (val >> bits) | (val << -bits);
 }
@@ -144,6 +147,32 @@ function armMsrRegister(this: ArmCpu, ins: number) {
     else {
         // TODO: Add SPSR functionality to MSR
         this.setCpsr((this.getCpsr() & ~byteMask) | (operand & byteMask));
+    }
+}
+
+function armMultiply(this: ArmCpu, ins: number) {
+    let rd = (ins >> 16) & 0xF;
+    let rs = (ins >> 8) & 0xF;
+    let rm = (ins >> 0) & 0xF;
+    let rsVal = this.r[rs];
+    let rmVal = this.r[rm];
+
+    let setFlags = bitTest(ins, 20);
+
+    let final;
+    if (bitTest(ins, 21)) {
+        let rnVal = this.r[(ins >> 12) & 0xF];
+        final = Math.imul(rsVal, rmVal) + rnVal;
+    }
+    else {
+        final = Math.imul(rsVal, rmVal);
+    }
+    final &= 0xFFFFFFFF;
+    this.r[rd] = final;
+
+    if (setFlags) {
+        this.cpsrNegative = bitTest(final, 31);
+        this.cpsrZero = final == 0;
     }
 }
 
@@ -307,9 +336,10 @@ function generateArmDataProcessing(ins: number) {
         }
 
         switch (opcode) {
-            case 0x0:
+            case 0x0: // AND
                 {
                     let final = rnVal & shifterOperand;
+
                     this.armSetReg(rd, final);
                     if (setFlags) {
                         this.cpsrNegative = bitTest(final, 31);
@@ -322,15 +352,44 @@ function generateArmDataProcessing(ins: number) {
                     }
                     break;
                 }
-            case 0x1:
-                throw new Error("Unimplemented EOR");
-            case 0x2:
-                throw new Error("Unimplemented SUB");
+            case 0x1: // EOR
+                {
+                    let final = rnVal ^ shifterOperand;
+
+                    this.armSetReg(rd, final);
+                    if (setFlags) {
+                        this.cpsrNegative = bitTest(final, 31);
+                        this.cpsrZero = final == 0;
+                        this.cpsrCarry = shifterCarryOut;
+
+                        if (rd == 15) {
+                            this.setCpsr(this.getSpsr());
+                        }
+                    }
+                    break;
+                }
+            case 0x2: // SUB
+                {
+                    let final = (rnVal - shifterOperand) & 0xFFFFFFFF;
+
+                    this.armSetReg(rd, final);
+                    if (setFlags) {
+                        this.cpsrNegative = bitTest(final, 31); // N
+                        this.cpsrZero = final == 0; // Z
+                        this.cpsrCarry = shifterOperand <= rnVal; // C
+                        this.cpsrOverflow = checkOverflowSub(rnVal, shifterOperand, final); // V
+
+                        if (rd == 15) {
+                            this.setCpsr(this.getSpsr());
+                        }
+                    }
+                    break;
+                }
             case 0x3:
                 throw new Error("Unimplemented RSB");
-            case 0x4:
+            case 0x4: // ADD
                 {
-                    let final = rnVal + shifterOperand;
+                    let final = (rnVal + shifterOperand) & 0xFFFFFFFF;
                     if (setFlags) {
                         this.cpsrNegative = bitTest(final, 31); // N
                         this.cpsrZero = final == 0; // Z
@@ -346,9 +405,9 @@ function generateArmDataProcessing(ins: number) {
                 }
             case 0x5:
                 throw new Error("Unimplemented ADC");
-            case 0x6:
+            case 0x6: // SBC
                 {
-                    let final = rnVal - shifterOperand - (this.cpsrCarry ? 0 : 1);
+                    let final = (rnVal - shifterOperand - (this.cpsrCarry ? 0 : 1)) & 0xFFFFFFFF;
 
                     this.armSetReg(rd, final);
                     if (setFlags) {
@@ -365,17 +424,47 @@ function generateArmDataProcessing(ins: number) {
                 break;
             case 0x7:
                 throw new Error("Unimplemented RSC");
-            case 0x8:
-                throw new Error("Unimplemented TST");
+            case 0x8: // TST
+                {
+                    let final = rnVal & shifterOperand;
+
+                    this.cpsrNegative = bitTest(final, 31);
+                    this.cpsrZero = final == 0;
+                    this.cpsrCarry = shifterCarryOut;
+                    break;
+                }
             case 0x9:
                 throw new Error("Unimplemented TEQ");
-            case 0xA:
-                throw new Error("Unimplemented CMP");
+            case 0xA: // CMP
+                {
+                    let final = (rnVal - shifterOperand) & 0xFFFFFFFF;
+
+                    this.cpsrNegative = bitTest(final, 31); // N
+                    this.cpsrZero = final == 0; // Z
+                    this.cpsrCarry = rnVal >= shifterOperand; // C
+                    this.cpsrOverflow = checkOverflowSub(rnVal, shifterOperand, final); // V
+                    break;
+                }
             case 0xB:
                 throw new Error("Unimplemented CMN");
-            case 0xC:
-                throw new Error("Unimplemented ORR");
-            case 0xD:
+            case 0xC: // ORR
+                {
+                    let final = rnVal | shifterOperand;
+
+                    this.armSetReg(rd, final);
+                    if (setFlags) {
+                        this.cpsrNegative = bitTest(final, 31);
+                        this.cpsrZero = final == 0;
+                        this.cpsrCarry = shifterCarryOut;
+
+                        if (rd == 15) {
+                            this.setCpsr(this.getSpsr());
+                        }
+                    }
+
+                    break;
+                }
+            case 0xD: // MOV
                 {
                     if (setFlags) {
                         this.cpsrNegative = bitTest(shifterOperand, 31);
@@ -468,12 +557,12 @@ function generateArmRegularLdrStr(ins: number) {
         if (l) {
             let loadVal = 0;
             if (b) {
-                loadVal = this.memory.read8(addr);
+                loadVal = this.read8(addr);
             } else {
                 if ((addr & 0b11) != 0) {
                     throw new Error("Misaligned address");
                 } else {
-                    loadVal = this.memory.read32(addr);
+                    loadVal = this.read32(addr);
                 }
             }
 
@@ -500,10 +589,10 @@ function generateArmRegularLdrStr(ins: number) {
 
             let storeVal = this.r[rd];
             if (b) {
-                this.memory.write8(addr, storeVal);
+                this.write8(addr, storeVal);
             }
             else {
-                this.memory.write32(addr & 0xFFFFFFFC, storeVal);
+                this.write32(addr & 0xFFFFFFFC, storeVal);
             }
 
             this.r[15] -= 4;
@@ -569,16 +658,16 @@ function generateArmMiscellaneousLdrStr(ins: number) {
                     if ((addr & 1) != 0) {
                         // Misaligned, read byte instead.
                         // Sign extend
-                        readVal = this.memory.read8(addr) << 24 >> 24;
+                        readVal = this.read8(addr) << 24 >> 24;
                     }
                     else {
                         // Sign extend
-                        readVal = this.memory.read16(addr) << 16 >> 16;
+                        readVal = this.read16(addr) << 16 >> 16;
                     }
                     loadVal = readVal;
                 }
                 else {
-                    let val = this.memory.read8(addr) << 24 >> 24;
+                    let val = this.read8(addr) << 24 >> 24;
 
                     loadVal = val;
                 }
@@ -586,7 +675,7 @@ function generateArmMiscellaneousLdrStr(ins: number) {
             else {
                 if (h) {
                     // Force halfword aligned, and rotate if unaligned
-                    loadVal = rotateRight32(this.memory.read16(addr & ~1), (addr & 1) * 8);
+                    loadVal = rotateRight32(this.read16(addr & ~1), (addr & 1) * 8);
                 }
             }
         }
@@ -609,7 +698,7 @@ function generateArmMiscellaneousLdrStr(ins: number) {
             else {
                 if (h) {
                     // Store Half Word
-                    this.memory.write16(addr & ~1, this.r[rd] & 0xFFFF);
+                    this.write16(addr & ~1, this.r[rd] & 0xFFFF);
                 }
             }
         }
@@ -635,16 +724,16 @@ function generateArmMiscellaneousLdrStr(ins: number) {
 }
 
 function generateArmLdmStm(ins: number) {
-    let P = bitTest(ins, 24); // post-indexed / offset addressing 
-    let U = bitTest(ins, 23); // invert
-    let S = bitTest(ins, 22);
-    let W = bitTest(ins, 21);
-    let L = bitTest(ins, 20); // Load vs Store
+    let p = bitTest(ins, 24); // post-indexed / offset addressing 
+    let u = bitTest(ins, 23); // invert
+    let s = bitTest(ins, 22);
+    let w = bitTest(ins, 21);
+    let l = bitTest(ins, 20); // Load vs Store
     return function (this: ArmCpu, ins: number) {
         let loadsPc = bitTest(ins, 15);
 
         let oldMode = 0;
-        if (S && (!L || !loadsPc)) {
+        if (s && (!l || !loadsPc)) {
             oldMode = this.getMode();
             this.setMode(ArmCpuMode.USR);
         }
@@ -653,12 +742,10 @@ function generateArmLdmStm(ins: number) {
 
         let addr = this.r[rn];
 
-        // String regs = "";
-
         let bitsSet = popCount(ins & 0xFFFF);
         let writebackValue;
-        if (U) {
-            if (W) {
+        if (u) {
+            if (w) {
                 writebackValue = addr + bitsSet * 4;
             }
             else {
@@ -666,13 +753,13 @@ function generateArmLdmStm(ins: number) {
             }
         }
         else {
-            if (W) {
+            if (w) {
                 writebackValue = addr - bitsSet * 4;
             }
             else {
                 writebackValue = addr;
             }
-            if (P) {
+            if (p) {
                 addr = addr - bitsSet * 4 - 4;
             }
             else {
@@ -680,54 +767,54 @@ function generateArmLdmStm(ins: number) {
             }
         }
 
-        if (!L) {
+        if (!l) {
             this.r[15] += 4;
         }
 
         for (let r = 0; r < 16; r++) {
             if (bitTest(ins, r)) {
-                if (L) {
-                    if (W) {
+                if (l) {
+                    if (w) {
                         this.r[rn] = writebackValue;
                     }
 
-                    if (P) addr += 4;
+                    if (p) addr += 4;
 
                     if (r != 15) {
-                        this.r[r] = this.memory.read32(addr & ~3);
+                        this.r[r] = this.read32(addr & ~3);
                     }
                     else {
-                        this.r[15] = this.memory.read32(addr & ~3);
+                        this.r[15] = this.read32(addr & ~3);
                         this.cpsrThumbState = bitTest(this.r[15], 0);
                         this.flushPipeline();
                     }
 
-                    if (!P) addr += 4;
+                    if (!p) addr += 4;
                 }
                 else {
 
-                    if (P) addr += 4;
+                    if (p) addr += 4;
 
-                    this.memory.write32(addr & ~3, this.r[r]);
+                    this.write32(addr & ~3, this.r[r]);
 
-                    if (!P) addr += 4;
+                    if (!p) addr += 4;
                 }
             }
         }
 
-        if (!L) {
+        if (!l) {
             this.r[15] -= 4;
         }
 
         // ARMv5: When Rn is in Rlist, writeback happens if Rn is the only register, or not the last
         // I can't figure out the order of operations so I'll just hack the only register case 
-        if (!L || bitsSet == 1) {
+        if (!l || bitsSet == 1) {
             this.r[rn] = writebackValue;
         }
 
         let emptyRlist = (ins & 0xFFFF) == 0;
         if (emptyRlist) {
-            if (U) {
+            if (u) {
                 this.r[rn] += 0x40;
             }
             else {
@@ -735,8 +822,8 @@ function generateArmLdmStm(ins: number) {
             }
         }
 
-        if (S) {
-            if (L && loadsPc) {
+        if (s) {
+            if (l && loadsPc) {
                 this.setCpsr(this.getSpsr());
             }
             else {
@@ -755,7 +842,7 @@ function thumbLdrLiteralPool(this: ArmCpu, ins: number) {
     let addr = (this.r[15] & 0xFFFFFFFC) + (immed8 << 2);
 
     let readAddr = addr & ~0b11;
-    let readVal = this.memory.read32(readAddr);
+    let readVal = this.read32(readAddr);
     this.r[rd] = rotateRight32(readVal, (addr & 0b11) << 3);
 }
 
@@ -1060,7 +1147,7 @@ function generateThumbLdmiaStmia(ins: number) {
             let register = 0;
             for (; registerList != 0; registerList >>= 1) {
                 if (bitTest(registerList, 0)) {
-                    this.r[register] = this.memory.read32(addr & ~3);
+                    this.r[register] = this.read32(addr & ~3);
                     addr += 4;
                 }
                 register++;
@@ -1069,7 +1156,7 @@ function generateThumbLdmiaStmia(ins: number) {
             // Handle empty rlist
             if ((ins & 0xFF) == 0) {
                 if (!this.isArmV5) {
-                    this.r[15] = this.memory.read32(addr & ~3);
+                    this.r[15] = this.read32(addr & ~3);
                     this.flushPipeline();
                 }
                 this.r[rn] += 0x40;
@@ -1088,7 +1175,7 @@ function generateThumbLdmiaStmia(ins: number) {
             let register = 0;
             for (; registerList != 0; registerList >>= 1) {
                 if (bitTest(registerList, 0)) {
-                    this.memory.write32(addr & ~3, this.r[register]);
+                    this.write32(addr & ~3, this.r[register]);
                     addr += 4;
                     if (!this.isArmV5) {
                         this.r[rn] = writebackVal;
@@ -1101,7 +1188,7 @@ function generateThumbLdmiaStmia(ins: number) {
             // Handle empty rlist
             if ((ins & 0xFF) == 0) {
                 if (!this.isArmV5) {
-                    this.memory.write32(addr & ~3, this.r[15]);
+                    this.write32(addr & ~3, this.r[15]);
                 }
                 this.r[rn] += 0x40;
             }
@@ -1145,7 +1232,7 @@ function thumbRegOffsStr(this: ArmCpu, ins: number) {
     let rmVal = this.r[rm];
 
     let addr = rnVal + rmVal;
-    this.memory.write32(addr & ~0b11, this.r[rd]);
+    this.write32(addr & ~0b11, this.r[rd]);
 }
 
 
@@ -1156,7 +1243,7 @@ function thumbImmOffsStr(this: ArmCpu, ins: number) {
 
     let addr = rnValue + (immed5 << 2);
 
-    this.memory.write32(addr & ~3, this.r[rd]);
+    this.write32(addr & ~3, this.r[rd]);
 }
 
 function thumbPush(this: ArmCpu, ins: number) {
@@ -1165,18 +1252,18 @@ function thumbPush(this: ArmCpu, ins: number) {
     addr -= popCount(ins & 0x1FF) * 4;
     addr &= 0xFFFFFFFF;
 
-    if (bitTest(ins, 0)) { /* regs += "R0 "; */ this.memory.write32(addr & ~3, this.r[0]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 1)) { /* regs += "R1 "; */ this.memory.write32(addr & ~3, this.r[1]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 2)) { /* regs += "R2 "; */ this.memory.write32(addr & ~3, this.r[2]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 3)) { /* regs += "R3 "; */ this.memory.write32(addr & ~3, this.r[3]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 4)) { /* regs += "R4 "; */ this.memory.write32(addr & ~3, this.r[4]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 5)) { /* regs += "R5 "; */ this.memory.write32(addr & ~3, this.r[5]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 6)) { /* regs += "R6 "; */ this.memory.write32(addr & ~3, this.r[6]); addr += 4; this.r[13] -= 4; }
-    if (bitTest(ins, 7)) { /* regs += "R7 "; */ this.memory.write32(addr & ~3, this.r[7]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 0)) { /* regs += "R0 "; */ this.write32(addr & ~3, this.r[0]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 1)) { /* regs += "R1 "; */ this.write32(addr & ~3, this.r[1]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 2)) { /* regs += "R2 "; */ this.write32(addr & ~3, this.r[2]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 3)) { /* regs += "R3 "; */ this.write32(addr & ~3, this.r[3]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 4)) { /* regs += "R4 "; */ this.write32(addr & ~3, this.r[4]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 5)) { /* regs += "R5 "; */ this.write32(addr & ~3, this.r[5]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 6)) { /* regs += "R6 "; */ this.write32(addr & ~3, this.r[6]); addr += 4; this.r[13] -= 4; }
+    if (bitTest(ins, 7)) { /* regs += "R7 "; */ this.write32(addr & ~3, this.r[7]); addr += 4; this.r[13] -= 4; }
 
     if (bitTest(ins, 8)) {
         /* regs += "LR "; */
-        this.memory.write32(addr, this.r[14]);
+        this.write32(addr, this.r[14]);
         addr += 4;
         this.r[13] -= 4;
     }
@@ -1184,7 +1271,7 @@ function thumbPush(this: ArmCpu, ins: number) {
     // Handle empty rlist
     if ((ins & 0x1FF) == 0) {
         if (!this.isArmV5) {
-            this.memory.write32(addr & ~3, this.r[15]);
+            this.write32(addr & ~3, this.r[15]);
         }
         this.r[13] += 0x40;
     }
@@ -1199,18 +1286,18 @@ function thumbPop(this: ArmCpu, ins: number) {
     let registerCount = popCount(ins & 0x1FF);
     this.r[13] = addr + registerCount * 4;
 
-    if (bitTest(ins, 0)) { /* regs += "R0 "; */ this.r[0] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 1)) { /* regs += "R1 "; */ this.r[1] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 2)) { /* regs += "R2 "; */ this.r[2] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 3)) { /* regs += "R3 "; */ this.r[3] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 4)) { /* regs += "R4 "; */ this.r[4] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 5)) { /* regs += "R5 "; */ this.r[5] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 6)) { /* regs += "R6 "; */ this.r[6] = this.memory.read32(addr & ~3); addr += 4; }
-    if (bitTest(ins, 7)) { /* regs += "R7 "; */ this.r[7] = this.memory.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 0)) { /* regs += "R0 "; */ this.r[0] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 1)) { /* regs += "R1 "; */ this.r[1] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 2)) { /* regs += "R2 "; */ this.r[2] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 3)) { /* regs += "R3 "; */ this.r[3] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 4)) { /* regs += "R4 "; */ this.r[4] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 5)) { /* regs += "R5 "; */ this.r[5] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 6)) { /* regs += "R6 "; */ this.r[6] = this.read32(addr & ~3); addr += 4; }
+    if (bitTest(ins, 7)) { /* regs += "R7 "; */ this.r[7] = this.read32(addr & ~3); addr += 4; }
 
     if (bitTest(ins, 8)) {
         /* regs += "PC "; */
-        this.r[15] = this.memory.read32(addr);
+        this.r[15] = this.read32(addr);
         if (this.isArmV5) {
             this.cpsrThumbState = bitTest(this.r[15], 0);
         }
@@ -1222,7 +1309,7 @@ function thumbPop(this: ArmCpu, ins: number) {
     // Handle empty rlist
     if ((ins & 0x1FF) == 0) {
         if (!this.isArmV5) {
-            this.r[15] = this.memory.read32(addr & ~3);
+            this.r[15] = this.read32(addr & ~3);
             this.flushPipeline();
         }
         this.r[13] += 0x40;
@@ -1248,6 +1335,8 @@ function resolveArmExecutor(ins: number) {
         return generateArmDataProcessing(ins);
     } else if (checkBinaryMask(ins, "01xxxxxxxxxxxxxxxxxxxxxxxxxx")) {
         return generateArmRegularLdrStr(ins);
+    } else if (checkBinaryMask(ins, "000000xxxxxxxxxxxxxx1001xxxx")) {
+        return armMultiply;
     } else if (checkBinaryMask(ins, "000xxxxxxxxxxxxxxxxx1xx1xxxx")) {
         return generateArmMiscellaneousLdrStr(ins);
     } else if (checkBinaryMask(ins, "100xxxxxxxxxxxxxxxxxxxxxxxxx")) {
@@ -1352,7 +1441,13 @@ function resolveThumbExecutor(ins: number) {
 
 class ArmCpu {
     isArmV5: boolean;
-    memory: Memory;
+
+    read8: ReadFunction;
+    write8: WriteFunction;
+    read16: ReadFunction;
+    write16: WriteFunction;
+    read32: ReadFunction;
+    write32: WriteFunction;
 
     executedNum = 0;
 
@@ -1414,9 +1509,15 @@ class ArmCpu {
         return table;
     }
 
-    constructor(isArmV5: boolean, memory: Memory) {
+    constructor(isArmV5: boolean, read8: ReadFunction, write8: WriteFunction, read16: ReadFunction, write16: WriteFunction, read32: ReadFunction, write32: WriteFunction) {
         this.isArmV5 = isArmV5;
-        this.memory = memory;
+        this.read8 = read8;
+        this.write8 = write8;
+        this.read16 = read16;
+        this.write16 = write16;
+        this.read32 = read32;
+        this.write32 = write32;
+
         this.r = new Uint32Array(16);
         this.rUsr = new Uint32Array(7);
         this.rFiq = new Uint32Array(7);
@@ -1599,20 +1700,20 @@ class ArmCpu {
     }
 
     executeArm() {
-        let ins = this.memory.read32(this.r[15] - 8);
+        let ins = this.read32(this.r[15] - 8);
         this.lastIns = ins;
         this.lastInsAddr = this.r[15] - 8;
         this.lastInsThumbState = false;
+
+        if (this.preExecutionHook) {
+            this.preExecutionHook(ins);
+        }
 
         let conditionCode = (ins >> 28) & 0xF;
         if (this.checkCondition(conditionCode)) {
             let decodeBits = ((ins >> 16) & 0xFF0) | ((ins >> 4) & 0xF);
             let executor = this.armExecutorTable[decodeBits];
             this.lastInsExecutor = executor;
-
-            if (this.preExecutionHook) {
-                this.preExecutionHook(ins);
-            }
 
             if (executor != null) {
                 executor(ins);
@@ -1631,7 +1732,7 @@ class ArmCpu {
     }
 
     executeThumb() {
-        let ins = this.memory.read16(this.r[15] - 4);
+        let ins = this.read16(this.r[15] - 4);
         this.lastIns = ins;
         this.lastInsAddr = this.r[15] - 4;
         this.lastInsThumbState = true;
